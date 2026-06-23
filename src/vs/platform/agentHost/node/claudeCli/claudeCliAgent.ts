@@ -247,7 +247,8 @@ export class ClaudeCliAgent extends Disposable implements IAgent {
 		this._activeEnv = this._profiles[this._activeProfile]?.env ?? {};
 
 		this._models.set(this._buildModelsFromConfig(), undefined);
-		this._logService.info(`[ClaudeCli] Config loaded (claudePath=${this._claudePath}, skipPermissions=${this._skipPermissions}, extraArgs=${JSON.stringify(this._extraArgs)}, profiles=${Object.keys(this._profiles).length}, activeProfile=${this._activeProfile || '(none)'})`);
+		const profileDebug = Object.keys(this._profiles).map(k => `${k}:${Object.keys(this._profiles[k]?.env ?? {}).length}`).join(',');
+		this._logService.info(`[ClaudeCli] Config loaded (claudePath=${this._claudePath}, skipPermissions=${this._skipPermissions}, extraArgs=${JSON.stringify(this._extraArgs)}, profiles=${Object.keys(this._profiles).length}, activeProfile=${this._activeProfile || '(none)'}, envKeys={${profileDebug}})`);
 	}
 
 	/**
@@ -268,47 +269,49 @@ export class ClaudeCliAgent extends Disposable implements IAgent {
 	 * that model in the picker — see {@link changeModel}.
 	 */
 	private _buildModelsFromConfig(): readonly IAgentModelInfo[] {
-		const envSource: Record<string, string | undefined> = Object.keys(this._activeEnv).length > 0
-			? this._activeEnv
-			: process.env;
-
-		const primary = envSource['ANTHROPIC_MODEL'];
-		const sonnet = envSource['ANTHROPIC_DEFAULT_SONNET_MODEL'];
-		const opus = envSource['ANTHROPIC_DEFAULT_OPUS_MODEL'];
-		const haiku = envSource['ANTHROPIC_DEFAULT_HAIKU_MODEL'];
-		// De-dupe while preserving order (primary first).
-		const ids = [primary, sonnet, opus, haiku].filter((v): v is string => typeof v === 'string' && v.length > 0);
-		const seen = new Set<string>();
-		const unique: string[] = [];
-		for (const id of ids) {
-			if (!seen.has(id)) {
-				seen.add(id);
-				unique.push(id);
+		// Build a model catalog that spans EVERY profile's models, so the UI
+		// picker lets the user pick any profile × any model in that profile.
+		// Each model entry's id is encoded as `<profile>::<modelId>` so
+		// `changeModel` can recover which profile to switch to and which model
+		// id to pass via `--model`. The displayed name is `<modelId> (<profile>)`.
+		const profileNames = Object.keys(this._profiles);
+		if (profileNames.length === 0) {
+			// No profiles configured — fall back to process env / bare aliases.
+			const envSource: Record<string, string | undefined> = Object.keys(this._activeEnv).length > 0
+				? this._activeEnv
+				: process.env;
+			const ids = [envSource['ANTHROPIC_MODEL'], envSource['ANTHROPIC_DEFAULT_SONNET_MODEL'], envSource['ANTHROPIC_DEFAULT_OPUS_MODEL'], envSource['ANTHROPIC_DEFAULT_HAIKU_MODEL']]
+				.filter((v): v is string => typeof v === 'string' && v.length > 0);
+			const seen = new Set<string>();
+			const unique = ids.filter(id => (seen.has(id) ? false : (seen.add(id), true)));
+			if (unique.length === 0) {
+				return [
+					{ provider: 'claude-cli', id: 'sonnet', name: 'Sonnet', supportsVision: true },
+					{ provider: 'claude-cli', id: 'opus', name: 'Opus', supportsVision: true },
+					{ provider: 'claude-cli', id: 'haiku', name: 'Haiku', supportsVision: true },
+				];
 			}
+			return unique.map(id => ({ provider: 'claude-cli', id, name: id, supportsVision: true }));
 		}
 
-		// Surface other profiles' primary model so the picker can switch
-		// profiles (picking one routes through `changeModel`).
-		for (const profileName of Object.keys(this._profiles)) {
-			if (profileName === this._activeProfile) {
-				continue;
-			}
-			const profileModel = this._profiles[profileName]?.env?.['ANTHROPIC_MODEL'];
-			if (typeof profileModel === 'string' && profileModel.length > 0 && !seen.has(profileModel)) {
-				seen.add(profileModel);
-				unique.push(profileModel);
+		const models: IAgentModelInfo[] = [];
+		const seenIds = new Set<string>();
+		// Active profile first (so its models sort to the top of the picker).
+		const ordered = [this._activeProfile, ...profileNames.filter(p => p !== this._activeProfile)];
+		for (const profileName of ordered) {
+			if (!profileName) { continue; }
+			const env = this._profiles[profileName]?.env;
+			if (!env) { continue; }
+			const ids = [env['ANTHROPIC_MODEL'], env['ANTHROPIC_DEFAULT_SONNET_MODEL'], env['ANTHROPIC_DEFAULT_OPUS_MODEL'], env['ANTHROPIC_DEFAULT_HAIKU_MODEL']]
+				.filter((v): v is string => typeof v === 'string' && v.length > 0);
+			for (const modelId of ids) {
+				const id = `${profileName}::${modelId}`;
+				if (seenIds.has(id)) { continue; }
+				seenIds.add(id);
+				models.push({ provider: 'claude-cli', id, name: `${modelId} (${profileName})`, supportsVision: true });
 			}
 		}
-
-		if (unique.length === 0) {
-			// No env overrides anywhere — fall back to the CLI's bare aliases.
-			return [
-				{ provider: 'claude-cli', id: 'sonnet', name: 'Sonnet', supportsVision: true },
-				{ provider: 'claude-cli', id: 'opus', name: 'Opus', supportsVision: true },
-				{ provider: 'claude-cli', id: 'haiku', name: 'Haiku', supportsVision: true },
-			];
-		}
-		return unique.map(id => ({ provider: 'claude-cli', id, name: id, supportsVision: true }));
+		return models;
 	}
 
 	// #region Descriptor + auth
@@ -1122,54 +1125,33 @@ export class ClaudeCliAgent extends Disposable implements IAgent {
 		const sessionId = AgentSession.id(session);
 		const entry = this._sessions.get(sessionId);
 
-		// If the picked model id is the ANTHROPIC_MODEL (or any
-		// ANTHROPIC_DEFAULT_*_MODEL) of some OTHER profile, switch the
-		// active profile to it so the next turn uses that profile's env.
-		// First match wins.
-		const matchingProfile = this._findProfileForModel(model.id);
-		if (matchingProfile !== undefined && matchingProfile !== this._activeProfile) {
-			this._logService.info(`[ClaudeCli] Switching active profile '${this._activeProfile || '(none)'}' -> '${matchingProfile}' (model=${model.id})`);
-			this._activeProfile = matchingProfile;
-			this._activeEnv = this._profiles[matchingProfile]?.env ?? {};
-			this._models.set(this._buildModelsFromConfig(), undefined);
-			// Clear any per-session model override so the profile's env
-			// (ANTHROPIC_MODEL) takes effect unopposed on the next turn.
+		// Model ids from the picker are encoded as `<profile>::<modelId>`
+		// (see _buildModelsFromConfig). Parse out the profile to switch to
+		// and the concrete model id to pass via `--model`.
+		const sepIdx = model.id.indexOf('::');
+		if (sepIdx > 0) {
+			const profileName = model.id.slice(0, sepIdx);
+			const modelId = model.id.slice(sepIdx + 2);
+			if (profileName !== this._activeProfile) {
+				this._logService.info(`[ClaudeCli] Switching active profile '${this._activeProfile || '(none)'}' -> '${profileName}' (model=${modelId})`);
+				this._activeProfile = profileName;
+				this._activeEnv = this._profiles[profileName]?.env ?? {};
+				this._models.set(this._buildModelsFromConfig(), undefined);
+			}
+			// If the picked model is the profile's ANTHROPIC_MODEL (primary),
+			// no `--model` override is needed — the profile env already sets it.
+			// Otherwise pass `--model <modelId>` to override the alias mapping.
+			const primary = this._profiles[profileName]?.env?.['ANTHROPIC_MODEL'];
 			if (entry) {
-				entry.model = undefined;
+				entry.model = (modelId === primary) ? undefined : modelId;
 			}
 			return;
 		}
 
-		// Otherwise it's a bare alias within the current profile (e.g.
-		// 'sonnet'/'opus'/'haiku'); store it as a per-session override
-		// passed via `--model <id>` on the next turn.
+		// Legacy bare-alias id (no `::`) — treat as a per-session override.
 		if (entry) {
 			entry.model = model.id;
 		}
-	}
-
-	/**
-	 * Returns the name of the profile whose `ANTHROPIC_MODEL` or any
-	 * `ANTHROPIC_DEFAULT_*_MODEL` env equals `modelId`, or `undefined`
-	 * if no profile matches. Used by {@link changeModel} to route a
-	 * model-picker selection to a profile switch.
-	 */
-	private _findProfileForModel(modelId: string): string | undefined {
-		for (const profileName of Object.keys(this._profiles)) {
-			const env = this._profiles[profileName]?.env;
-			if (!env) {
-				continue;
-			}
-			if (
-				env['ANTHROPIC_MODEL'] === modelId
-				|| env['ANTHROPIC_DEFAULT_SONNET_MODEL'] === modelId
-				|| env['ANTHROPIC_DEFAULT_OPUS_MODEL'] === modelId
-				|| env['ANTHROPIC_DEFAULT_HAIKU_MODEL'] === modelId
-			) {
-				return profileName;
-			}
-		}
-		return undefined;
 	}
 
 	private _killChild(entry: IClaudeCliSessionEntry): void {
