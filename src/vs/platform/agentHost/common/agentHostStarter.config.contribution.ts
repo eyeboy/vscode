@@ -20,6 +20,12 @@ import {
 	AgentHostOTelExporterTypeSettingId,
 	AgentHostOTelOtlpEndpointSettingId,
 	AgentHostOTelOutfileSettingId,
+	ClaudeLocalAgentEnabledSettingId,
+	ClaudeLocalAgentClaudePathSettingId,
+	ClaudeLocalAgentSkipPermissionsSettingId,
+	ClaudeLocalAgentExtraArgsSettingId,
+	ClaudeLocalAgentProfilesSettingId,
+	ClaudeLocalAgentActiveProfileSettingId,
 } from './agentService.js';
 
 // Settings consumed by the agent host starter (`electronAgentHostStarter.ts`
@@ -92,6 +98,55 @@ configurationRegistry.registerConfiguration({
 			items: { type: 'string' },
 			description: nls.localize('chat.agentHost.codexAgent.binaryArgs', "Additional command-line arguments passed to `codex app-server`. Primarily useful for debugging (for example, `--log-level=debug`)."),
 			default: [],
+			tags: ['experimental', 'advanced'],
+			included: product.quality !== 'stable',
+		},
+		[ClaudeLocalAgentEnabledSettingId]: {
+			type: 'boolean',
+			description: nls.localize('claudeLocalAgent.enabled', "When enabled, the agent host registers a Claude (Local CLI) provider that spawns the locally-installed `claude` CLI and uses your own Claude Code credentials/config (not the in-process SDK or Copilot auth). Requires `#chat.agentHost.enabled#` and `claude` on your PATH (or `#claudeLocalAgent.claudePath#`). This is a startup gate — the agent host process must be restarted for changes to take effect."),
+			default: false,
+			tags: ['experimental', 'advanced'],
+			included: product.quality !== 'stable',
+		},
+		[ClaudeLocalAgentClaudePathSettingId]: {
+			type: 'string',
+			description: nls.localize('claudeLocalAgent.claudePath', "Path or command name of the locally-installed `claude` CLI executable. Defaults to `claude` (resolved from PATH). Hot-reloadable: applies to the next turn without restarting the agent host."),
+			default: 'claude',
+			tags: ['experimental', 'advanced'],
+			included: product.quality !== 'stable',
+		},
+		[ClaudeLocalAgentSkipPermissionsSettingId]: {
+			type: 'boolean',
+			description: nls.localize('claudeLocalAgent.skipPermissions', "When enabled (the default), passes `--dangerously-skip-permissions` to the `claude` CLI so it runs tools autonomously without blocking on permission prompts. v1 has no permission-prompt UI bridge, so disabling this may cause the CLI to block indefinitely. Hot-reloadable: applies to the next turn."),
+			default: true,
+			tags: ['experimental', 'advanced'],
+			included: product.quality !== 'stable',
+		},
+		[ClaudeLocalAgentExtraArgsSettingId]: {
+			type: 'array',
+			items: { type: 'string' },
+			description: nls.localize('claudeLocalAgent.extraArgs', "Additional command-line arguments passed to the `claude` CLI (for example, `--model`). Hot-reloadable: applies to the next turn."),
+			default: [],
+			tags: ['experimental', 'advanced'],
+			included: product.quality !== 'stable',
+		},
+		[ClaudeLocalAgentProfilesSettingId]: {
+			type: 'object',
+			description: nls.localize('claudeLocalAgent.profiles', "Named profiles for the `claude` CLI, each a bag of environment variables (e.g. `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_*_MODEL`, `CLAUDE_CODE_*`). Switch profiles via `#claudeLocalAgent.activeProfile#` or the model picker. Hot-reloadable. Tokens are stored in plaintext."),
+			default: {},
+			tags: ['experimental', 'advanced'],
+			included: product.quality !== 'stable',
+			additionalProperties: {
+				type: 'object',
+				properties: {
+					env: { type: 'object', additionalProperties: { type: 'string' } },
+				},
+			},
+		},
+		[ClaudeLocalAgentActiveProfileSettingId]: {
+			type: 'string',
+			description: nls.localize('claudeLocalAgent.activeProfile', "Name of the active profile in `#claudeLocalAgent.profiles#`. Switching applies to the next turn (hot-reloadable). The model picker also switches profiles when you pick a model belonging to another profile."),
+			default: '',
 			tags: ['experimental', 'advanced'],
 			included: product.quality !== 'stable',
 		},

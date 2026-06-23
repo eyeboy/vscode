@@ -104,6 +104,17 @@ class SessionsSetUpWidget extends Disposable {
 			return;
 		}
 
+		// If a local CLI agent is enabled (e.g. claude-cli), it carries no
+		// server-side auth requirement — the CLI authenticates itself via
+		// env/login. Skip the GitHub sign-in welcome so the user can use
+		// that agent without signing in to GitHub.
+		if (this.configurationService.getValue<boolean>('claudeLocalAgent.enabled')) {
+			this.logService.info('[sessions welcome] Skipping welcome: a local CLI agent is enabled (no GitHub sign-in required).');
+			this.storageService.store(WELCOME_COMPLETE_KEY, true, StorageScope.APPLICATION, StorageTarget.MACHINE);
+			this.onCompleted();
+			return;
+		}
+
 		if (isWeb) {
 			this._checkWebAuth();
 			this._watchWebAuth();

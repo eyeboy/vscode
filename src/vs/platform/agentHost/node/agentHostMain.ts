@@ -15,18 +15,17 @@ import { URI } from '../../../base/common/uri.js';
 import { generateUuid } from '../../../base/common/uuid.js';
 import * as os from 'os';
 import * as inspector from 'inspector';
-import { AgentHostClaudeAgentEnabledEnvVar, AgentHostCodexAgentEnabledEnvVar, AgentHostIpcChannels, IAgentHostInspectInfo, IAgentHostSocketInfo, IAgentService, IConnectionTrackerService, isAgentEnabled } from '../common/agentService.js';
+import { spawnSync } from 'child_process';
+import { ClaudeLocalAgentEnabledEnvVar, AgentHostIpcChannels, IAgentHostInspectInfo, IAgentHostSocketInfo, IAgentService, IConnectionTrackerService, isAgentEnabled } from '../common/agentService.js';
 import { AgentService } from './agentService.js';
 import { IAgentConfigurationService } from './agentConfigurationService.js';
 import { IAgentHostCompletions } from './agentHostCompletions.js';
 import { IAgentHostTerminalManager } from './agentHostTerminalManager.js';
-import { CopilotAgent } from './copilot/copilotAgent.js';
 import { CopilotBranchNameGenerator, ICopilotBranchNameGenerator } from './copilot/copilotBranchNameGenerator.js';
 import { CopilotApiService, ICopilotApiService } from './shared/copilotApiService.js';
-import { ClaudeAgent } from './claude/claudeAgent.js';
-import { ClaudeAgentSdkService, ClaudeSdkPackage, IClaudeAgentSdkService } from './claude/claudeAgentSdkService.js';
+import { ClaudeCliAgent } from './claudeCli/claudeCliAgent.js';
+import { ClaudeAgentSdkService, IClaudeAgentSdkService } from './claude/claudeAgentSdkService.js';
 import { ClaudeProxyService, IClaudeProxyService } from './claude/claudeProxyService.js';
-import { CodexAgent, CodexSdkPackage } from './codex/codexAgent.js';
 import { CodexProxyService, ICodexProxyService } from './codex/codexProxyService.js';
 import { AgentSdkDownloader, IAgentSdkDownloader } from './agentSdkDownloader.js';
 import { IAgentHostOTelService } from '../common/otel/agentHostOTelService.js';
@@ -184,24 +183,39 @@ async function startAgentHost(): Promise<void> {
 		diServices.set(IAgentHostTerminalManager, agentService.terminalManager);
 		diServices.set(IAgentConfigurationService, agentService.configurationService);
 		diServices.set(IAgentHostCompletions, agentService.completionsService);
-		agentService.registerProvider(instantiationService.createInstance(CopilotAgent));
-		// Claude and Codex providers are gated on two things:
-		//  1. The user-facing enable toggle (`chat.agentHost.<x>Agent.enabled`,
-		//     forwarded as an env var by the starters). Claude defaults to on,
-		//     Codex defaults to off.
-		//  2. The SDK being reachable. Claude is a devDependency of this repo
-		//     so the bare-import path in `ClaudeAgentSdkService._loadSdk`
-		//     always succeeds in dev; in built products the SDK ships via
-		//     `product.agentSdks.claude` and the downloader handles it. Codex
-		//     has no equivalent dev path yet, so it still requires either the
-		//     env-var override or a `product.agentSdks.codex` entry.
-		// If either gate fails, the provider is not registered and never appears
-		// in the agent picker (matches the pre-CDN UX exactly).
-		if (isAgentEnabled(process.env[AgentHostClaudeAgentEnabledEnvVar], true) && (!environmentService.isBuilt || agentSdkDownloader.isAvailable(ClaudeSdkPackage))) {
-			agentService.registerProvider(instantiationService.createInstance(ClaudeAgent));
-		}
-		if (isAgentEnabled(process.env[AgentHostCodexAgentEnabledEnvVar], false) && agentSdkDownloader.isAvailable(CodexSdkPackage)) {
-			agentService.registerProvider(instantiationService.createInstance(CodexAgent));
+		// Copilot/Claude(SDK)/Codex providers are intentionally NOT registered
+		// in this fork: they all authenticate via GitHub Copilot OAuth, which
+		// blocks `IAgentHostService.authenticationPending` on a sign-in this
+		// fork doesn't require. Leaving them registered keeps
+		// `authenticationPending` stuck true, which prevents
+		// `LocalAgentHostSessionsProvider._refreshSessions()` from ever firing
+		// (it waits for auth to settle) — so the Agents window sidebar stays
+		// empty. This fork only needs the local-CLI Claude provider below.
+		// agentService.registerProvider(instantiationService.createInstance(CopilotAgent));
+		// if (isAgentEnabled(process.env[AgentHostClaudeAgentEnabledEnvVar], true) && (!environmentService.isBuilt || agentSdkDownloader.isAvailable(ClaudeSdkPackage))) {
+		// 	agentService.registerProvider(instantiationService.createInstance(ClaudeAgent));
+		// }
+		// if (isAgentEnabled(process.env[AgentHostCodexAgentEnabledEnvVar], false) && agentSdkDownloader.isAvailable(CodexSdkPackage)) {
+		// 	agentService.registerProvider(instantiationService.createInstance(CodexAgent));
+		// }
+		// Claude (Local CLI) provider: spawns the locally-installed `claude` CLI
+		// using the user's own Claude Code credentials/config — independent of the
+		// in-process SDK and Copilot auth. Gated on the enable toggle (default off,
+		// forwarded as an env var because it is a startup gate — the agent host has
+		// no unregister path) and `claude` being reachable on PATH. The configured
+		// `claudeLocalAgent.claudePath` is read from rootConfig by the agent itself
+		// (hot-reloadable); here we only probe the default `claude` to decide
+		// whether to register at all.
+		if (isAgentEnabled(process.env[ClaudeLocalAgentEnabledEnvVar], false)) {
+			let cliOnPath = false;
+			try {
+				cliOnPath = spawnSync('claude', ['--version'], { shell: isWindows }).status === 0;
+			} catch { /* claude not on PATH — skip registration */ }
+			if (cliOnPath) {
+				agentService.registerProvider(instantiationService.createInstance(ClaudeCliAgent));
+			} else {
+				logService.warn('[claude-cli] enabled but \'claude\' not found on PATH; provider not registered.');
+			}
 		}
 	} catch (err) {
 		logService.error('Failed to create AgentService', err);

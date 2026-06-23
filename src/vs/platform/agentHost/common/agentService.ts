@@ -87,6 +87,32 @@ export const AgentHostClaudeAgentEnabledSettingId = 'chat.agentHost.claudeAgent.
 export const AgentHostCodexAgentEnabledSettingId = 'chat.agentHost.codexAgent.enabled';
 
 /**
+ * Configuration key controlling whether the Claude Local (CLI) provider is
+ * registered in the agent host process. When `true`, the agent host registers
+ * a `ClaudeCliAgent` that spawns the locally-installed `claude` CLI (using
+ * your own Claude Code credentials/config) instead of the in-process SDK.
+ * Defaults to `false`. Requires `#chat.agentHost.enabled#`. This is a startup
+ * gate (the agent host has no unregister path), so changes take effect only
+ * after the agent host process restarts.
+ */
+export const ClaudeLocalAgentEnabledSettingId = 'claudeLocalAgent.enabled';
+
+/** Path/command of the locally-installed `claude` CLI executable. Hot-reloadable via rootConfig. */
+export const ClaudeLocalAgentClaudePathSettingId = 'claudeLocalAgent.claudePath';
+
+/** When true, passes `--dangerously-skip-permissions` to the `claude` CLI. Hot-reloadable via rootConfig. */
+export const ClaudeLocalAgentSkipPermissionsSettingId = 'claudeLocalAgent.skipPermissions';
+
+/** Additional command-line arguments passed to the `claude` CLI. Hot-reloadable via rootConfig. */
+export const ClaudeLocalAgentExtraArgsSettingId = 'claudeLocalAgent.extraArgs';
+
+/** Named profiles (each a bag of env vars) for the `claude` CLI. Hot-reloadable via rootConfig. */
+export const ClaudeLocalAgentProfilesSettingId = 'claudeLocalAgent.profiles';
+
+/** Name of the active profile in {@link ClaudeLocalAgentProfilesSettingId}. Hot-reloadable via rootConfig. */
+export const ClaudeLocalAgentActiveProfileSettingId = 'claudeLocalAgent.activeProfile';
+
+/**
  * Optional override that points at an **SDK root directory** containing a
  * `node_modules/@anthropic-ai/claude-agent-sdk` subtree. When set, the agent
  * host loads the Claude SDK from that path instead of the bare import (which
@@ -110,6 +136,15 @@ export const AgentHostClaudeAgentEnabledEnvVar = 'VSCODE_AGENT_HOST_CLAUDE_AGENT
  * `'false'`; absent means "default" (`false`).
  */
 export const AgentHostCodexAgentEnabledEnvVar = 'VSCODE_AGENT_HOST_CODEX_AGENT_ENABLED';
+
+/**
+ * Environment variable form of {@link ClaudeLocalAgentEnabledSettingId}.
+ * Set by the agent host starters from the setting. Accepts `'true'` / `'false'`;
+ * absent means "default" (`false`). Only `enabled` is forwarded via env var
+ * (it is a startup gate); the other `claudeLocalAgent.*` settings are
+ * hot-reloaded via rootConfig (see `ClaudeLocalAgentForwarder`).
+ */
+export const ClaudeLocalAgentEnabledEnvVar = 'VSCODE_AGENT_HOST_CLAUDE_LOCAL_AGENT_ENABLED';
 
 /**
  * Resolves the effective enable state for a Claude/Codex provider from the
@@ -386,6 +421,7 @@ export interface IAgentSdkStarterSettings {
 	readonly codexBinaryArgs?: readonly string[];
 	readonly claudeAgentEnabled?: boolean;
 	readonly codexAgentEnabled?: boolean;
+	readonly claudeLocalAgentEnabled?: boolean;
 }
 
 export function buildAgentSdkEnv(
@@ -409,6 +445,9 @@ export function buildAgentSdkEnv(
 	}
 	if (settings.codexAgentEnabled !== undefined) {
 		setIfMissing(AgentHostCodexAgentEnabledEnvVar, settings.codexAgentEnabled ? 'true' : 'false');
+	}
+	if (settings.claudeLocalAgentEnabled !== undefined) {
+		setIfMissing(ClaudeLocalAgentEnabledEnvVar, settings.claudeLocalAgentEnabled ? 'true' : 'false');
 	}
 	return out;
 }
